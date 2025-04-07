@@ -37,6 +37,47 @@ class YouTubeUploader:
             with open(TOKEN_FILE, 'wb') as token:
                 pickle.dump(creds, token)
         return build("youtube", "v3", credentials=creds)
+    
+    def _cache_playlist_videos(self, playlist_id):
+        """Cache all videos in a playlist"""
+        try:
+            video_titles = set()
+            request = self.youtube.playlistItems().list(
+                part="snippet",
+                playlistId=playlist_id,
+                maxResults=50
+            )
+            response = request.execute()
+            
+            # Add all video titles to the cache
+            for item in response.get('items', []):
+                video_titles.add(item['snippet']['title'].lower())
+                
+            # Handle pagination if more than 50 videos
+            while 'nextPageToken' in response:
+                request = self.youtube.playlistItems().list(
+                    part="snippet",
+                    playlistId=playlist_id,
+                    maxResults=50,
+                    pageToken=response['nextPageToken']
+                )
+                response = request.execute()
+                for item in response.get('items', []):
+                    video_titles.add(item['snippet']['title'].lower())
+                    
+            self.video_cache[playlist_id] = video_titles
+            print(f"Cached {len(video_titles)} videos for playlist {playlist_id}")
+        except HttpError as e:
+            print(f"Error caching playlist items: {e}")
+            self.video_cache[playlist_id] = set()
+    
+    def _is_video_in_playlist(self, video_title, playlist_id):
+        """Check if video already exists in playlist using cache"""
+        # Ensure the playlist videos are cached
+        if playlist_id not in self.video_cache:
+            self._cache_playlist_videos(playlist_id)
+        
+        return video_title.lower() in self.video_cache[playlist_id]
 
     def _find_existing_playlist(self, playlist_name):
         """Search for existing playlist by name"""
@@ -87,29 +128,6 @@ class YouTubeUploader:
             print(f"Failed to create playlist: {e}")
             return None
 
-    def _is_video_in_playlist(self, video_title, playlist_id):
-        """Check if video already exists in playlist"""
-        cache_key = f"{playlist_id}_{video_title}"
-        if cache_key in self.video_cache:
-            return self.video_cache[cache_key]
-        
-        try:
-            request = self.youtube.playlistItems().list(
-                part="snippet",
-                playlistId=playlist_id,
-                maxResults=50
-            )
-            response = request.execute()
-            
-            for item in response.get('items', []):
-                if item['snippet']['title'].lower() == video_title.lower():
-                    self.video_cache[cache_key] = True
-                    return True
-        except HttpError as e:
-            print(f"Error checking playlist items: {e}")
-        
-        self.video_cache[cache_key] = False
-        return False
 
     def _upload_video_with_retry(self, video_path, playlist_id, srt_path=None, max_retries=3):
         """Enhanced upload with retry logic and duplicate checking"""
@@ -182,21 +200,15 @@ class YouTubeUploader:
                     print("API quota exceeded. Please try again later.")
                     return False
                 else:
-                    wait_time = (attempt + 1) * 30  # Exponential backoff
+                    wait_time = (attempt + 1) * 3  # Exponential backoff
                     print(f"Attempt {attempt + 1} failed. Retrying in {wait_time} seconds...")
                     time.sleep(wait_time)
         
         print(f"Failed to upload after {max_retries} attempts: {video_title}")
         return False
 
-    def process_folder(self, folder_path):
+    def process_folder(self, folder_path, playlist_id):
         """Process a folder of videos"""
-        playlist_name = os.path.basename(folder_path)
-        playlist_id = self._create_or_get_playlist(playlist_name)
-        if not playlist_id:
-            print(f"Failed to get/create playlist for {playlist_name}")
-            return False
-        
         videos = [f for f in os.listdir(folder_path) if f.lower().endswith('.mp4')]
         if not videos:
             print(f"No videos found in {folder_path}")
@@ -238,19 +250,24 @@ if __name__ == "__main__":
     MASTER_FOLDER = r"E:\khóa học\Backend web\[FEDU] Lập trình Backend với PHP- Mysql và Jquery"
     
     uploader = YouTubeUploader()
+
+    playlist_name = os.path.basename(MASTER_FOLDER)
+    playlist_id = uploader._create_or_get_playlist(playlist_name)
+    if not playlist_id:
+        print(f"Failed to get/create playlist for {playlist_name}")
     
     try:
         # Check if master folder contains videos directly
         if any(f.lower().endswith('.mp4') for f in os.listdir(MASTER_FOLDER)):
             print(f"Processing master folder: {MASTER_FOLDER}")
-            uploader.process_folder(MASTER_FOLDER)
+            uploader.process_folder(MASTER_FOLDER, playlist_id)
         else:
             # Process subfolders
             for subfolder in os.listdir(MASTER_FOLDER):
                 subfolder_path = os.path.join(MASTER_FOLDER, subfolder)
                 if os.path.isdir(subfolder_path):
                     print(f"\nProcessing subfolder: {subfolder}")
-                    uploader.process_folder(subfolder_path)
+                    uploader.process_folder(subfolder_path, playlist_id)
     
     except KeyboardInterrupt:
         print("\nUpload interrupted by user")
