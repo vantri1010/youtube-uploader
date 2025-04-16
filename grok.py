@@ -7,8 +7,15 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
-import googleapiclient.http
+import google.auth.transport.requests
+import requests
 import httplib2
+
+# Set retries for the requests library
+requests.adapters.DEFAULT_RETRIES = 3
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(max_retries=3)
+session.mount("https://", adapter)
 
 # Define constants
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube"]
@@ -18,27 +25,51 @@ UPLOAD_LOG_FILE = r"upload_log.json"
 TOKEN_FILE = r"token.pickle"
 MAX_RETRIES = 3
 BASE_BACKOFF_SECONDS = 5
+HTTP_TIMEOUT = 60  # Set timeout to 60 seconds
 
-# Step 1: Authenticate with token caching and increased timeout
+# Step 1: Authenticate with token caching
 def get_authenticated_service():
     credentials = None
+    # Create an HTTP client with a timeout
+    http = httplib2.Http(timeout=HTTP_TIMEOUT)
+
+    # Check if token file exists
     if os.path.exists(TOKEN_FILE):
         print("Loading cached credentials...")
-        with open(TOKEN_FILE, "rb") as token:
-            credentials = pickle.load(token)
+        try:
+            with open(TOKEN_FILE, "rb") as token:
+                credentials = pickle.load(token)
+            # Check if the token is valid and not expired
+            if credentials and credentials.valid:
+                print("Using cached credentials successfully!")
+            elif credentials and credentials.expired and credentials.refresh_token:
+                print("Credentials expired. Refreshing token...")
+                credentials.refresh(google.auth.transport.requests.Request(session=session))
+                with open(TOKEN_FILE, "wb") as token:
+                    pickle.dump(credentials, token)
+                print("Refreshed token and saved for future use!")
+            else:
+                print("Cached credentials are invalid or cannot be refreshed.")
+                credentials = None
+        except Exception as e:
+            print(f"Error loading token file: {e}")
+            credentials = None
 
-    if not credentials or not credentials.valid:
+    # If no valid credentials, authenticate via browser
+    if not credentials:
         print("No valid credentials found. Authenticating via browser...")
         flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_FILE, SCOPES)
         credentials = flow.run_local_server(port=8080)
-        with open(TOKEN_FILE, "wb") as token:
-            pickle.dump(credentials, token)
-        print("Credentials saved for future use!")
-    else:
-        print("Using cached credentials successfully!")
+        # Save the credentials for future runs
+        try:
+            with open(TOKEN_FILE, "wb") as token:
+                pickle.dump(credentials, token)
+            print("Credentials saved for future use!")
+        except Exception as e:
+            print(f"Error saving token file: {e}")
 
-    http = httplib2.Http(timeout=60)
-    return build("youtube", "v3", credentials=credentials, http=http)
+    # Build the YouTube service with the custom HTTP client
+    return build("youtube", "v3", credentials=credentials)
 
 # Step 2: Load or initialize upload log
 def load_upload_log():
@@ -95,16 +126,28 @@ def get_or_create_playlist(youtube, playlist_name):
 def get_uploaded_videos(youtube):
     videos = {}
     try:
-        request = youtube.videos().list(
+        # Step 4.1: Get the user's channel to find the uploads playlist
+        channels_response = youtube.channels().list(
+            part="contentDetails",
+            mine=True
+        ).execute()
+
+        # Get the uploads playlist ID
+        uploads_playlist_id = channels_response["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+        # Step 4.2: Fetch videos from the uploads playlist
+        request = youtube.playlistItems().list(
             part="snippet",
-            mine=True,
+            playlistId=uploads_playlist_id,
             maxResults=50
         )
         while request:
             response = request.execute()
-            for video in response.get("items", []):
-                videos[video["snippet"]["title"]] = video["id"]
-            request = youtube.videos().list_next(request, response)
+            for item in response.get("items", []):
+                video_title = item["snippet"]["title"]
+                video_id = item["snippet"]["resourceId"]["videoId"]
+                videos[video_title] = video_id
+            request = youtube.playlistItems().list_next(request, response)
     except HttpError as e:
         print(f"Error fetching uploaded videos: {e}")
     return videos
