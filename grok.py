@@ -15,17 +15,18 @@ import httplib2
 requests.adapters.DEFAULT_RETRIES = 3
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(max_retries=3)
+session.mount("http://", adapter)
 session.mount("https://", adapter)
 
 # Define constants
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube"]
 CLIENT_SECRETS_FILE = r"client_secret.json"
-MASTER_FOLDER = r"E:\khóa học\Backend web\[FEDU] PHP MVC"
+MASTER_FOLDER = r"E:\khóa học\NodeJS\Tron-bo-NodeJS-sieuthuthuat.com"
 UPLOAD_LOG_FILE = r"upload_log.json"
 TOKEN_FILE = r"token.pickle"
 MAX_RETRIES = 3
 BASE_BACKOFF_SECONDS = 5
-HTTP_TIMEOUT = 60  # Set timeout to 60 seconds
+HTTP_TIMEOUT = 60
 
 # Step 1: Authenticate with token caching
 def get_authenticated_service():
@@ -154,7 +155,7 @@ def get_uploaded_videos(youtube):
 
 # Step 5: Get videos in the playlist
 def get_playlist_videos(youtube, playlist_id):
-    playlist_videos = set()
+    playlist_videos = {}
     try:
         request = youtube.playlistItems().list(
             part="snippet",
@@ -164,7 +165,9 @@ def get_playlist_videos(youtube, playlist_id):
         while request:
             response = request.execute()
             for item in response.get("items", []):
-                playlist_videos.add(item["snippet"]["title"])
+                title = item["snippet"]["title"]
+                video_id = item["snippet"]["resourceId"]["videoId"]
+                playlist_videos[title] = video_id
             request = youtube.playlistItems().list_next(request, response)
     except HttpError as e:
         print(f"Error fetching playlist videos: {e}")
@@ -269,31 +272,35 @@ def add_video_to_playlist(youtube, video_id, playlist_id):
 # Step 10: Process a folder (master or subfolder)
 def process_folder(youtube, folder_path, playlist_id, playlist_name):
     upload_log = load_upload_log()
-    mp4_files = [f for f in os.listdir(folder_path) if f.endswith(".mp4")]
+    mp4_files = sorted([f for f in os.listdir(folder_path) if f.endswith(".mp4")])  # Sort alphabetically
     srt_files = [f for f in os.listdir(folder_path) if f.endswith(".srt")]
 
     # Step 10.1: Get uploaded videos and playlist videos
     print("Fetching uploaded videos and playlist videos...")
-    uploaded_videos = get_uploaded_videos(youtube)
+    uploaded_videos_all = get_uploaded_videos(youtube)
     playlist_videos = get_playlist_videos(youtube, playlist_id)
 
     # Step 10.2: Delete videos that were uploaded but not added to the playlist
-    delete_unlisted_videos(youtube, uploaded_videos, playlist_videos, mp4_files)
+    delete_unlisted_videos(youtube, uploaded_videos_all, playlist_videos, mp4_files)
 
-    # Step 10.3: Initialize upload log for this playlist
-    upload_log[playlist_name] = upload_log.get(playlist_name, {})
-    upload_log[playlist_name]["uploaded_videos"] = upload_log[playlist_name].get("uploaded_videos", {})
-
-    # Step 10.4: Update pending_videos based on local folder and uploaded videos
-    pending_videos = []
+    # Step 10.3: Create uploaded_videos mapping {mp4_file: video_id}
+    uploaded_videos = {}
     for mp4_file in mp4_files:
-        if mp4_file not in upload_log[playlist_name]["uploaded_videos"]:
-            pending_videos.append(mp4_file)
+        base_name = os.path.splitext(mp4_file)[0]
+        if base_name in playlist_videos:
+            uploaded_videos[mp4_file] = playlist_videos[base_name]
+
+    # Step 10.4: Update upload_log
+    upload_log[playlist_name] = upload_log.get(playlist_name, {})
+    upload_log[playlist_name]["uploaded_videos"] = uploaded_videos
+
+    # Step 10.5: Update pending_videos
+    pending_videos = sorted([f for f in mp4_files if f not in uploaded_videos])
     upload_log[playlist_name]["pending_videos"] = pending_videos
     print(f"Updated pending_videos: {pending_videos}")
     save_upload_log(upload_log)
 
-    # Step 10.5: Process pending videos
+    # Step 10.6: Process pending videos
     while upload_log[playlist_name]["pending_videos"]:
         mp4_file = upload_log[playlist_name]["pending_videos"][0]
         mp4_path = os.path.join(folder_path, mp4_file)
@@ -301,16 +308,15 @@ def process_folder(youtube, folder_path, playlist_id, playlist_name):
 
         print(f"\nProcessing video: {mp4_file} ({len(upload_log[playlist_name]['pending_videos'])} remaining)")
         try:
-            # Check if already uploaded (in case of partial failure in previous run)
-            if mp4_file in uploaded_videos:
-                video_id = uploaded_videos[mp4_file]
+            base_name = os.path.splitext(mp4_file)[0]
+            if base_name in uploaded_videos_all:
+                video_id = uploaded_videos_all[base_name]
                 print(f"Video {mp4_file} already uploaded with ID: {video_id}")
             else:
                 video_id = upload_video(youtube, mp4_path)
                 if video_id is None:
-                    continue  # Keep in pending_videos if upload fails
+                    continue
 
-            # Look for matching SRT file
             matching_srt = None
             for srt_file in srt_files:
                 if mp4_basename in srt_file:
