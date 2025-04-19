@@ -21,7 +21,7 @@ session.mount("https://", adapter)
 # Define constants
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube"]
 CLIENT_SECRETS_FILE = r"client_secret.json"
-MASTER_FOLDER = r"E:\khóa học\NodeJS\Tron-bo-NodeJS-sieuthuthuat.com"
+MASTER_FOLDER = r"E:\khóa học\NodeJS\TypeScript-ES6(Javascript) qua dự án Shopping Cart- Nền tảng NodeJS và AngularJS2"
 UPLOAD_LOG_FILE = r"upload_log.json"
 TOKEN_FILE = r"token.pickle"
 MAX_RETRIES = 3
@@ -75,13 +75,27 @@ def get_authenticated_service():
 # Step 2: Load or initialize upload log
 def load_upload_log():
     if os.path.exists(UPLOAD_LOG_FILE):
-        with open(UPLOAD_LOG_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(UPLOAD_LOG_FILE, "r") as f:
+                content = f.read().strip()
+                if not content:
+                    print("upload_log.json is empty. Initializing with empty dictionary.")
+                    return {}
+                return json.loads(content)
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON in upload_log.json: {e}. Initializing with empty dictionary.")
+            return {}
+        except Exception as e:
+            print(f"Error loading upload_log.json: {e}. Initializing with empty dictionary.")
+            return {}
     return {}
 
 def save_upload_log(upload_log):
-    with open(UPLOAD_LOG_FILE, "w") as f:
-        json.dump(upload_log, f, indent=4)
+    try:
+        with open(UPLOAD_LOG_FILE, "w") as f:
+            json.dump(upload_log, f, indent=4)
+    except Exception as e:
+        print(f"Error saving upload_log.json: {e}")
 
 # Step 3: Check if playlist exists, create if not, and return its ID
 def get_or_create_playlist(youtube, playlist_name):
@@ -123,37 +137,7 @@ def get_or_create_playlist(youtube, playlist_name):
         print(f"Error creating playlist: {e}")
         raise
 
-# Step 4: Get all videos uploaded by the user
-def get_uploaded_videos(youtube):
-    videos = {}
-    try:
-        # Step 4.1: Get the user's channel to find the uploads playlist
-        channels_response = youtube.channels().list(
-            part="contentDetails",
-            mine=True
-        ).execute()
-
-        # Get the uploads playlist ID
-        uploads_playlist_id = channels_response["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
-
-        # Step 4.2: Fetch videos from the uploads playlist
-        request = youtube.playlistItems().list(
-            part="snippet",
-            playlistId=uploads_playlist_id,
-            maxResults=50
-        )
-        while request:
-            response = request.execute()
-            for item in response.get("items", []):
-                video_title = item["snippet"]["title"]
-                video_id = item["snippet"]["resourceId"]["videoId"]
-                videos[video_title] = video_id
-            request = youtube.playlistItems().list_next(request, response)
-    except HttpError as e:
-        print(f"Error fetching uploaded videos: {e}")
-    return videos
-
-# Step 5: Get videos in the playlist
+# Step 4: Get videos in the playlist
 def get_playlist_videos(youtube, playlist_id):
     playlist_videos = {}
     try:
@@ -167,28 +151,20 @@ def get_playlist_videos(youtube, playlist_id):
             for item in response.get("items", []):
                 title = item["snippet"]["title"]
                 video_id = item["snippet"]["resourceId"]["videoId"]
+                # Normalize title by removing .mp4 if present
+                if title.endswith(".mp4"):
+                    title = title[:-4]
                 playlist_videos[title] = video_id
             request = youtube.playlistItems().list_next(request, response)
     except HttpError as e:
         print(f"Error fetching playlist videos: {e}")
     return playlist_videos
 
-# Step 6: Delete videos not in the playlist
-def delete_unlisted_videos(youtube, uploaded_videos, playlist_videos, mp4_files):
-    for video_title, video_id in uploaded_videos.items():
-        if video_title in mp4_files and video_title not in playlist_videos:
-            try:
-                print(f"Deleting video '{video_title}' (ID: {video_id}) as it was not added to the playlist...")
-                youtube.videos().delete(id=video_id).execute()
-                print(f"Successfully deleted video '{video_title}'")
-            except HttpError as e:
-                print(f"Error deleting video '{video_title}': {e}")
-
-# Step 7: Upload video with retry logic
+# Step 5: Upload video with retry logic
 def upload_video(youtube, file_path):
     request_body = {
         "snippet": {
-            "title": os.path.basename(file_path),
+            "title": os.path.splitext(os.path.basename(file_path))[0],
             "description": "Uploaded automatically via script",
             "tags": ["auto-upload", "playlist"],
             "categoryId": "22"
@@ -211,8 +187,6 @@ def upload_video(youtube, file_path):
             error_reason = e.error_details[0]["reason"] if e.error_details else "unknown"
             if e.resp.status in [403, 400] and error_reason in ["quotaExceeded", "dailyLimitExceeded", "uploadLimitExceeded"]:
                 print(f"Daily upload limit exceeded for {file_path}: {e}")
-                print("YouTube typically allows 6-10 uploads per day for new/unverified accounts.")
-                print("The script will save progress and exit.")
                 print("Please run the script again after the quota resets (midnight Pacific Time).")
                 raise QuotaExceededError("Daily upload limit exceeded")
             elif e.resp.status == 429:
@@ -228,7 +202,7 @@ def upload_video(youtube, file_path):
     print(f"Failed to upload {file_path} after {MAX_RETRIES} attempts. Keeping in pending list for next run.")
     return None
 
-# Step 8: Upload SRT captions if available
+# Step 6: Upload SRT captions if available
 def upload_captions(youtube, video_id, srt_path):
     try:
         print(f"Uploading captions from {srt_path} for video ID {video_id}...")
@@ -249,7 +223,7 @@ def upload_captions(youtube, video_id, srt_path):
     except HttpError as e:
         print(f"Error uploading captions for video ID {video_id}: {e}")
 
-# Step 9: Add video to playlist
+# Step 7: Add video to playlist
 def add_video_to_playlist(youtube, video_id, playlist_id):
     try:
         print(f"Adding video ID {video_id} to playlist ID {playlist_id}...")
@@ -269,38 +243,37 @@ def add_video_to_playlist(youtube, video_id, playlist_id):
         print(f"Error adding video {video_id} to playlist: {e}")
         return False
 
-# Step 10: Process a folder (master or subfolder)
+# Step 8: Process a folder (master or subfolder)
 def process_folder(youtube, folder_path, playlist_id, playlist_name):
     upload_log = load_upload_log()
     mp4_files = sorted([f for f in os.listdir(folder_path) if f.endswith(".mp4")])  # Sort alphabetically
     srt_files = [f for f in os.listdir(folder_path) if f.endswith(".srt")]
 
-    # Step 10.1: Get uploaded videos and playlist videos
-    print("Fetching uploaded videos and playlist videos...")
-    uploaded_videos_all = get_uploaded_videos(youtube)
-    playlist_videos = get_playlist_videos(youtube, playlist_id)
+    # Step 1: Get playlist videos
+    try:
+        playlist_videos = get_playlist_videos(youtube, playlist_id)
+    except Exception as e:
+        print(f"Error fetching playlist videos: {e}")
+        return False
 
-    # Step 10.2: Delete videos that were uploaded but not added to the playlist
-    delete_unlisted_videos(youtube, uploaded_videos_all, playlist_videos, mp4_files)
-
-    # Step 10.3: Create uploaded_videos mapping {mp4_file: video_id}
+    # Step 2: Create uploaded_videos mapping {mp4_file: video_id}
     uploaded_videos = {}
     for mp4_file in mp4_files:
         base_name = os.path.splitext(mp4_file)[0]
         if base_name in playlist_videos:
             uploaded_videos[mp4_file] = playlist_videos[base_name]
 
-    # Step 10.4: Update upload_log
+    # Step 3: Update upload_log
     upload_log[playlist_name] = upload_log.get(playlist_name, {})
     upload_log[playlist_name]["uploaded_videos"] = uploaded_videos
 
-    # Step 10.5: Update pending_videos
+    # Step 4: Update pending_videos
     pending_videos = sorted([f for f in mp4_files if f not in uploaded_videos])
     upload_log[playlist_name]["pending_videos"] = pending_videos
     print(f"Updated pending_videos: {pending_videos}")
     save_upload_log(upload_log)
 
-    # Step 10.6: Process pending videos
+    # Step 5: Process pending videos
     while upload_log[playlist_name]["pending_videos"]:
         mp4_file = upload_log[playlist_name]["pending_videos"][0]
         mp4_path = os.path.join(folder_path, mp4_file)
@@ -308,9 +281,8 @@ def process_folder(youtube, folder_path, playlist_id, playlist_name):
 
         print(f"\nProcessing video: {mp4_file} ({len(upload_log[playlist_name]['pending_videos'])} remaining)")
         try:
-            base_name = os.path.splitext(mp4_file)[0]
-            if base_name in uploaded_videos_all:
-                video_id = uploaded_videos_all[base_name]
+            if mp4_basename in upload_log[playlist_name]["uploaded_videos"]:
+                video_id = upload_log[playlist_name]["uploaded_videos"][mp4_basename]
                 print(f"Video {mp4_file} already uploaded with ID: {video_id}")
             else:
                 video_id = upload_video(youtube, mp4_path)
@@ -330,7 +302,7 @@ def process_folder(youtube, folder_path, playlist_id, playlist_name):
             # Add to playlist
             if add_video_to_playlist(youtube, video_id, playlist_id):
                 # Only mark as uploaded if successfully added to playlist
-                upload_log[playlist_name]["uploaded_videos"][mp4_file] = video_id
+                upload_log[playlist_name]["uploaded_videos"][mp4_basename] = video_id
                 upload_log[playlist_name]["pending_videos"].remove(mp4_file)
                 save_upload_log(upload_log)
             else:
