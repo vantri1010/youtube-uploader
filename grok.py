@@ -27,6 +27,7 @@ TOKEN_FILE = r"token.pickle"
 MAX_RETRIES = 3
 BASE_BACKOFF_SECONDS = 5
 HTTP_TIMEOUT = 60
+CHUNK_SIZE = 256 * 1024  # 256KB
 
 # Step 1: Authenticate with token caching
 def get_authenticated_service():
@@ -162,44 +163,80 @@ def get_playlist_videos(youtube, playlist_id):
 
 # Step 5: Upload video with retry logic
 def upload_video(youtube, file_path):
+    file_size = os.path.getsize(file_path)
+    print(f"File size: {file_size / (1024*1024):.2f} MB")
+
     request_body = {
         "snippet": {
             "title": os.path.splitext(os.path.basename(file_path))[0],
-            "description": "Uploaded automatically via script",
-            "tags": ["auto-upload", "playlist"],
-            "categoryId": "22"
+            "description": "Uploaded automatically via grok.py script",
+            "tags": ["go", "microservices", "kubernetes", "golang"],
+            "categoryId": "28"
         },
-        "status": {"privacyStatus": "private"}
+        "status": {
+            "privacyStatus": "private",
+            "embeddable": True,
+            "license": "youtube"
+        }
     }
-    media = MediaFileUpload(file_path)
 
     for attempt in range(MAX_RETRIES):
         try:
-            print(f"Attempt {attempt + 1}/{MAX_RETRIES}: Uploading {file_path}...")
-            response = youtube.videos().insert(
+            # Recreate media per attempt to ensure a clean resumable stream
+            media = MediaFileUpload(
+                file_path,
+                chunksize=CHUNK_SIZE,     # must be multiple of 256KB
+                resumable=True,
+                mimetype="video/mp4"
+            )
+
+            print(f"Attempt {attempt + 1}/{MAX_RETRIES}: Uploading {file_path} "
+                  f"({file_size / (1024*1024):.2f} MB) with {CHUNK_SIZE//1024} KB chunks...")
+
+            upload_request = youtube.videos().insert(
                 part="snippet,status",
                 body=request_body,
                 media_body=media
-            ).execute()
-            print(f"Successfully uploaded {file_path} with ID: {response['id']}")
-            return response["id"]
+            )
+
+            response = None
+            while response is None:
+                status, response = upload_request.next_chunk()
+                if status:
+                    percent = int(status.progress() * 100)
+                    print(f"   Uploaded {percent}%", end="\r")
+
+            if response:
+                video_id = response["id"]
+                print(f"\nSuccessfully uploaded! Video ID: {video_id}")
+                return video_id
+
         except HttpError as e:
-            error_reason = e.error_details[0]["reason"] if e.error_details else "unknown"
-            if e.resp.status in [403, 400] and error_reason in ["quotaExceeded", "dailyLimitExceeded", "uploadLimitExceeded"]:
-                print(f"Daily upload limit exceeded for {file_path}: {e}")
-                print("Please run the script again after the quota resets (midnight Pacific Time).")
+            # Robust quota detection by parsing error JSON
+            reason = ""
+            try:
+                err = json.loads(e.content.decode("utf-8"))
+                errors = err.get("error", {}).get("errors", [])
+                if errors:
+                    reason = errors[0].get("reason", "")
+            except Exception:
+                pass
+
+            if e.resp.status in [403, 400] and reason in ["quotaExceeded", "dailyLimitExceeded", "uploadLimitExceeded"]:
+                print(f"Daily upload quota exceeded: {reason}")
                 raise QuotaExceededError("Daily upload limit exceeded")
-            elif e.resp.status == 429:
-                backoff_time = BASE_BACKOFF_SECONDS * (2 ** attempt) + random.uniform(0, 1)
-                print(f"Rate limit exceeded: {e}. Retrying in {backoff_time:.2f} seconds...")
-                time.sleep(backoff_time)
             else:
-                print(f"Temporary failure uploading {file_path}: {e}. Retrying in {BASE_BACKOFF_SECONDS * (2 ** attempt):.2f} seconds...")
-                time.sleep(BASE_BACKOFF_SECONDS * (2 ** attempt))
+                print(f"HTTP error: {e}")
+
         except Exception as e:
-            print(f"Unexpected error uploading {file_path}: {e}. Retrying in {BASE_BACKOFF_SECONDS * (2 ** attempt):.2f} seconds...")
-            time.sleep(BASE_BACKOFF_SECONDS * (2 ** attempt))
-    print(f"Failed to upload {file_path} after {MAX_RETRIES} attempts. Keeping in pending list for next run.")
+            print(f"Unexpected error: {e}")
+
+        if attempt < MAX_RETRIES - 1:
+            backoff = BASE_BACKOFF_SECONDS * (2 ** attempt) + random.uniform(0, 1)
+            print(f"Retrying in {backoff:.1f} seconds...")
+            time.sleep(backoff)
+
+    print(f"Failed to upload {file_path} after {MAX_RETRIES} attempts.")
     return None
 
 # Step 6: Upload SRT captions if available
