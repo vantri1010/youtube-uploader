@@ -2,7 +2,7 @@
 
 ## Overview
 
-This Python script (`grok.py`) automates uploading videos to YouTube, organizing them into a playlist, and managing upload progress to avoid duplicates. It uses the YouTube Data API to authenticate, upload videos, add them to a playlist, and optionally upload captions (SRT files). The script tracks progress in a JSON log file (`upload_log.json`), ensuring it resumes from where it left off, even after interruptions like quota limits.
+This Python script (`grok.py`) automates uploading videos to YouTube, organizing them into a playlist, and managing upload progress to avoid duplicates. It uses the YouTube Data API to authenticate, upload videos, add them to a playlist, and optionally upload captions (SRT files). The script tracks progress by pre-fetching all uploaded videos in current playlist, ensuring it resumes from where it left off, even after interruptions like quota limits.
 
 ### Features
 
@@ -44,7 +44,6 @@ This Python script (`grok.py`) automates uploading videos to YouTube, organizing
    - Open `grok.py` and update the following constants if needed:
      - `MASTER_FOLDER`: Path to your video folder (e.g., `r"E:\khóa học\NodeJS\Some Courses"`).
      - `CLIENT_SECRETS_FILE`: Path to your `client_secret.json` file (default: `r"client_secret.json"`).
-     - `UPLOAD_LOG_FILE`: Path to the log file (default: `r"upload_log.json"`).
      - `TOKEN_FILE`: Path to the OAuth token file (default: `r"token.pickle"`).
 
 3. **Prepare Your Video Folder**:
@@ -71,7 +70,6 @@ This Python script (`grok.py`) automates uploading videos to YouTube, organizing
    - Scans the local folder for MP4 files and compares them with the playlist to avoid duplicates.
    - Uploads remaining videos in alphabetical order, adding them to the playlist.
    - Optionally uploads matching SRT captions.
-   - Updates `upload_log.json` with uploaded and pending videos.
 
 3. **Monitor Progress**:
 
@@ -83,48 +81,12 @@ This Python script (`grok.py`) automates uploading videos to YouTube, organizing
      Processing video: Bản sao của 18.mp4 (74 remaining)
      ```
 
-   - Check `upload_log.json` to see the current state:
-
-     - `uploaded_videos`: Videos already uploaded and in the playlist.
-     - `pending_videos`: Videos remaining to be uploaded.
-
 4. **Handle Interruptions**:
 
-   - If the script stops (e.g., due to quota limits), progress is saved in `upload_log.json`. Rerun the script to resume from the last uploaded video.
-
-## Example `upload_log.json`
-
-```json
-{
-    "Full NodeJS Course": {
-        "playlist_id": "PLZR5pKIruVjHaEde59o-Oc0kJXlWYF37c",
-        "uploaded_videos": {
-            "Bản sao của 01.mp4": "ifszWddKSuo",
-            "Bản sao của 02.mp4": "7k4fVSiJodg",
-            ...
-            "Bản sao của 17.mp4": "NJx0p8daH-o"
-        },
-        "pending_videos": [
-            "Bản sao của 18.mp4",
-            "Bản sao của 19.mp4",
-            ...
-            "Bản sao của 91.mp4"
-        ]
-    }
-}
-```
+   - If the script stops (e.g., due to quota limits). Rerun the script in the next 24h to resume from the last uploaded video.
 
 ## Troubleshooting
 
-- **JSON Parsing Error**:
-
-  - If you see `Invalid JSON in upload_log.json: Expecting value: line 1 column 1 (char 0)`, the log file might be empty or corrupted. The script now handles this by initializing an empty dictionary.
-  - Delete `upload_log.json` and rerun to start fresh, but note that you’ll need to manually update it if videos were already uploaded.
-
-- **Duplicate Uploads**:
-
-  - If duplicates occur, ensure video titles in YouTube match local filenames (without ".mp4"). The script now uploads videos with titles excluding the ".mp4" extension for consistency.
-  - Check `upload_log.json` to verify `uploaded_videos` matches your playlist.
 
 - **Quota Limits**:
 
@@ -140,7 +102,7 @@ This Python script (`grok.py`) automates uploading videos to YouTube, organizing
 
 ## Notes
 
-- The script assumes video filenames are unique and sequential (e.g., "Bản sao của 01.mp4"). If filenames don’t match playlist titles, you may need to manually edit `upload_log.json` or adjust the script.
+- The script assumes video filenames are unique and sequential (e.g., "Bản sao của 01.mp4").
 - API quota usage includes fetching playlist videos (\~1 unit per 50 items). For large playlists, this may consume more quota.
 
 ## License
